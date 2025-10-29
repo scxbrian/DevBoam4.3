@@ -1,11 +1,9 @@
+
 const express = require('express');
-const { Pool } = require('pg');
+const { Client, Order, Shop, ActivityLog } = require('../models');
+const { authenticateToken } = require('../middleware/auth');
 
 const router = express.Router();
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
 
 // Middleware to check admin access
 const requireAdmin = (req, res, next) => {
@@ -15,60 +13,59 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
-router.use(requireAdmin);
+router.use(authenticateToken, requireAdmin);
 
 // Get platform statistics
 router.get('/stats', async (req, res) => {
   try {
-    // Get total revenue
-    const revenueResult = await pool.query(
-      'SELECT COALESCE(SUM(total_amount), 0) as total_revenue FROM orders WHERE status = $1',
-      ['completed']
-    );
+    const totalRevenue = await Order.aggregate([
+      { $match: { status: 'completed' } },
+      { $group: { _id: null, total: { $sum: '$total_amount' } } },
+    ]);
 
-    // Get client counts by tier
-    const clientsResult = await pool.query(
-      `SELECT 
-        COUNT(*) as total_clients,
-        COUNT(CASE WHEN status = 'active' THEN 1 END) as active_clients
-       FROM clients`
-    );
+    const clientCounts = await Client.aggregate([
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+    ]);
 
-    // Get shop counts
-    const shopsResult = await pool.query(
-      `SELECT 
-        COUNT(*) as total_shops,
-        COUNT(CASE WHEN status = 'active' THEN 1 END) as active_shops
-       FROM shops`
-    );
+    const shopCounts = await Shop.aggregate([
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+    ]);
 
-    // Get revenue by tier
-    const tierRevenueResult = await pool.query(
-      `SELECT 
-        c.service_tier,
-        COALESCE(SUM(o.total_amount), 0) as revenue
-       FROM clients c
-       LEFT JOIN orders o ON c.id = o.client_id AND o.status = 'completed'
-       GROUP BY c.service_tier`
-    );
+    const tierRevenue = await Client.aggregate([
+      {
+        $lookup: {
+          from: 'orders',
+          localField: '_id',
+          foreignField: 'client',
+          as: 'orders',
+        },
+      },
+      { $unwind: '$orders' },
+      { $match: { 'orders.status': 'completed' } },
+      {
+        $group: {
+          _id: '$serviceTier',
+          revenue: { $sum: '$orders.total_amount' },
+        },
+      },
+    ]);
 
     const stats = {
       revenue: {
-        total: parseFloat(revenueResult.rows[0].total_revenue) || 0
+        total: totalRevenue.length > 0 ? totalRevenue[0].total : 0,
       },
       clients: {
-        total: parseInt(clientsResult.rows[0].total_clients) || 0,
-        active: parseInt(clientsResult.rows[0].active_clients) || 0
+        total: clientCounts.reduce((acc, curr) => acc + curr.count, 0),
+        active: clientCounts.find(c => c._id === 'active')?.count || 0,
       },
       shops: {
-        total: parseInt(shopsResult.rows[0].total_shops) || 0,
-        active: parseInt(shopsResult.rows[0].active_shops) || 0
+        total: shopCounts.reduce((acc, curr) => acc + curr.count, 0),
+        active: shopCounts.find(c => c._id === 'active')?.count || 0,
       },
-      tierRevenue: tierRevenueResult.rows
+      tierRevenue,
     };
 
     res.json(stats);
-
   } catch (error) {
     console.error('Admin stats error:', error);
     res.status(500).json({ error: 'Failed to get platform statistics' });
@@ -78,50 +75,19 @@ router.get('/stats', async (req, res) => {
 // Get all clients
 router.get('/clients', async (req, res) => {
   try {
-    const { status, tier, limit, offset = 0 } = req.query;
+    const { status, tier, limit = 10, offset = 0 } = req.query;
+    const query = {};
+    if (status) query.status = status;
+    if (tier) query.serviceTier = tier;
 
-    let query = `
-      SELECT 
-        c.*,
-        COUNT(s.id) as shop_count,
-        COALESCE(SUM(o.total_amount), 0) as total_revenue
-      FROM clients c
-      LEFT JOIN shops s ON c.id = s.client_id
-      LEFT JOIN orders o ON c.id = o.client_id AND o.status = 'completed'
-      WHERE 1=1
-    `;
-    let params = [];
-    let paramIndex = 1;
+    const clients = await Client.find(query)
+      .populate('shops')
+      .populate('orders')
+      .limit(parseInt(limit))
+      .skip(parseInt(offset))
+      .sort({ createdAt: -1 });
 
-    if (status) {
-      query += ` AND c.status = $${paramIndex}`;
-      params.push(status);
-      paramIndex++;
-    }
-
-    if (tier) {
-      query += ` AND c.service_tier = $${paramIndex}`;
-      params.push(tier);
-      paramIndex++;
-    }
-
-    query += ' GROUP BY c.id ORDER BY c.created_at DESC';
-
-    if (limit) {
-      query += ` LIMIT $${paramIndex}`;
-      params.push(parseInt(limit));
-      paramIndex++;
-    }
-
-    if (offset) {
-      query += ` OFFSET $${paramIndex}`;
-      params.push(parseInt(offset));
-    }
-
-    const result = await pool.query(query, params);
-
-    res.json({ clients: result.rows });
-
+    res.json({ clients });
   } catch (error) {
     console.error('Get clients error:', error);
     res.status(500).json({ error: 'Failed to get clients' });
@@ -131,42 +97,32 @@ router.get('/clients', async (req, res) => {
 // Create new client
 router.post('/clients', async (req, res) => {
   try {
-    const { 
-      name, 
-      email, 
-      phone, 
-      company, 
-      serviceTier, 
-      contractValue,
-      notes 
-    } = req.body;
+    const { name, email, phone, company, serviceTier, contractValue, notes } = req.body;
 
     if (!name || !email || !serviceTier) {
       return res.status(400).json({ error: 'Name, email, and service tier are required' });
     }
 
-    // Check if client already exists
-    const existingClient = await pool.query(
-      'SELECT id FROM clients WHERE email = $1',
-      [email]
-    );
-
-    if (existingClient.rows.length > 0) {
+    const existingClient = await Client.findOne({ email });
+    if (existingClient) {
       return res.status(400).json({ error: 'Client with this email already exists' });
     }
 
-    const result = await pool.query(
-      `INSERT INTO clients (name, email, phone, company, service_tier, contract_value, notes, status, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'active', NOW())
-       RETURNING *`,
-      [name, email, phone, company, serviceTier, contractValue, notes]
-    );
-
-    res.status(201).json({
-      message: 'Client created successfully',
-      client: result.rows[0]
+    const client = new Client({
+      name,
+      email,
+      phone,
+      company,
+      serviceTier,
+      contractValue,
+      notes,
     });
 
+    await client.save();
+    res.status(201).json({
+      message: 'Client created successfully',
+      client,
+    });
   } catch (error) {
     console.error('Client creation error:', error);
     res.status(500).json({ error: 'Failed to create client' });
@@ -177,35 +133,31 @@ router.post('/clients', async (req, res) => {
 router.put('/clients/:clientId', async (req, res) => {
   try {
     const { clientId } = req.params;
-    const { 
-      name, 
-      email, 
-      phone, 
-      company, 
-      serviceTier, 
-      contractValue,
-      status,
-      notes 
-    } = req.body;
+    const { name, email, phone, company, serviceTier, contractValue, status, notes } = req.body;
 
-    const result = await pool.query(
-      `UPDATE clients 
-       SET name = $1, email = $2, phone = $3, company = $4, service_tier = $5, 
-           contract_value = $6, status = $7, notes = $8, updated_at = NOW()
-       WHERE id = $9
-       RETURNING *`,
-      [name, email, phone, company, serviceTier, contractValue, status, notes, clientId]
+    const client = await Client.findByIdAndUpdate(
+      clientId,
+      {
+        name,
+        email,
+        phone,
+        company,
+        serviceTier,
+        contractValue,
+        status,
+        notes,
+      },
+      { new: true }
     );
 
-    if (result.rows.length === 0) {
+    if (!client) {
       return res.status(404).json({ error: 'Client not found' });
     }
 
     res.json({
       message: 'Client updated successfully',
-      client: result.rows[0]
+      client,
     });
-
   } catch (error) {
     console.error('Client update error:', error);
     res.status(500).json({ error: 'Failed to update client' });
@@ -216,22 +168,14 @@ router.put('/clients/:clientId', async (req, res) => {
 router.get('/activity', async (req, res) => {
   try {
     const { limit = 50, offset = 0 } = req.query;
+    const activities = await ActivityLog.find()
+      .populate('user', 'name')
+      .populate('client', 'name')
+      .limit(parseInt(limit))
+      .skip(parseInt(offset))
+      .sort({ createdAt: -1 });
 
-    const result = await pool.query(
-      `SELECT 
-        al.*,
-        u.name as user_name,
-        c.name as client_name
-       FROM activity_logs al
-       LEFT JOIN users u ON al.user_id = u.id
-       LEFT JOIN clients c ON al.client_id = c.id
-       ORDER BY al.created_at DESC
-       LIMIT $1 OFFSET $2`,
-      [parseInt(limit), parseInt(offset)]
-    );
-
-    res.json({ activities: result.rows });
-
+    res.json({ activities });
   } catch (error) {
     console.error('Activity logs error:', error);
     res.status(500).json({ error: 'Failed to get activity logs' });

@@ -3,6 +3,8 @@ import { BarChart3, Package, ShoppingCart, Users, TrendingUp, Settings } from 'l
 import DashboardStats from '../components/DashboardStats';
 import OrdersTable from '../components/OrdersTable';
 import ProductsGrid from '../components/ProductsGrid';
+import CustomersTable from '../components/CustomersTable';
+import ShopSettings from '../components/ShopSettings'; // Import the new component
 
 export default function ClientDashboard() {
   const [activeTab, setActiveTab] = useState('overview');
@@ -98,14 +100,14 @@ export default function ClientDashboard() {
           {activeTab === 'customers' && (
             <div className="bg-white rounded-lg shadow-sm p-6">
               <h2 className="text-xl font-semibold text-gray-900 mb-4">Customer Management</h2>
-              <p className="text-gray-600">Customer management features coming soon...</p>
+              <CustomersTable />
             </div>
           )}
 
           {activeTab === 'settings' && (
             <div className="bg-white rounded-lg shadow-sm p-6">
               <h2 className="text-xl font-semibold text-gray-900 mb-4">Shop Settings</h2>
-              <p className="text-gray-600">Shop configuration options coming soon...</p>
+              <ShopSettings />
             </div>
           )}
         </div>

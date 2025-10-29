@@ -2,6 +2,9 @@ import React, { useState } from 'react';
 import { Users, ShoppingCart, TrendingUp, Settings, Building, CreditCard } from 'lucide-react';
 import ClientsTable from '../components/ClientsTable';
 import AdminStats from '../components/AdminStats';
+import ShopsTable from '../components/ShopsTable';
+import BillingManagement from '../components/BillingManagement';
+import PlatformSettings from '../components/PlatformSettings'; // Import the new component
 
 export default function AdminDashboard() {
   const [activeTab, setActiveTab] = useState('overview');
@@ -115,21 +118,21 @@ export default function AdminDashboard() {
           {activeTab === 'shops' && (
             <div className="bg-white rounded-lg shadow-sm p-6">
               <h2 className="text-xl font-semibold text-gray-900 mb-4">Active Shops</h2>
-              <p className="text-gray-600">Shop management interface coming soon...</p>
+              <ShopsTable />
             </div>
           )}
 
           {activeTab === 'billing' && (
             <div className="bg-white rounded-lg shadow-sm p-6">
               <h2 className="text-xl font-semibold text-gray-900 mb-4">Billing & Payments</h2>
-              <p className="text-gray-600">Billing management interface coming soon...</p>
+              <BillingManagement />
             </div>
           )}
 
           {activeTab === 'settings' && (
             <div className="bg-white rounded-lg shadow-sm p-6">
               <h2 className="text-xl font-semibold text-gray-900 mb-4">Platform Settings</h2>
-              <p className="text-gray-600">Platform configuration options coming soon...</p>
+              <PlatformSettings />
             </div>
           )}
         </div>

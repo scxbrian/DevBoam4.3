@@ -245,7 +245,6 @@ export default function BomaShopBuilder() {
                   selectedDomain={selectedDomain}
                   domainPrice={domainPrice}
                   selectedMaintenance={selectedMaintenance}
-                  selectedMaintenance={selectedMaintenance}
                   totalCost={totalCost}
                 />
                 
