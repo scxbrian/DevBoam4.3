@@ -111,20 +111,7 @@ cd ../project && npm install
 
 Create a `.env` file in the `backend` directory.
 
-**Backend `.env`**
-```
-MONGO_URI=<your_mongo_atlas_connection>
-FIREBASE_TYPE=service_account
-FIREBASE_PROJECT_ID=<firebase_project_id>
-FIREBASE_PRIVATE_KEY_ID=<firebase_private_key_id>
-FIREBASE_PRIVATE_KEY="<your_firebase_private_key>"
-FIREBASE_CLIENT_EMAIL=<firebase_client_email>
-FIREBASE_CLIENT_ID=<firebase_client_id>
-FIREBASE_AUTH_URI=<firebase_auth_uri>
-FIREBASE_TOKEN_URI=<firebase_token_uri>
-FIREBASE_AUTH_PROVIDER_X509_CERT_URL=<firebase_auth_provider_cert_url>
-FIREBASE_CLIENT_X509_CERT_URL=<firebase_client_cert_url>
-FRONTEND_URL=http://localhost:5173
+
 ```
 The frontend does not require a `.env` file for local development as API calls are proxied.
 
