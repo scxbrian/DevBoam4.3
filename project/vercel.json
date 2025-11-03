@@ -3,7 +3,7 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "https://your-backend-api-url.onrender.com/api/$1"
+      "destination": "https://devboam4-3.onrender.com"
     }
   ]
 }
