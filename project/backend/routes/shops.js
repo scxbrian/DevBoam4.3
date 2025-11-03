@@ -1,56 +1,53 @@
 const express = require('express');
-const { Pool } = require('pg');
-
 const router = express.Router();
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
+const Shop = require('../models/Shop');
+// Correctly import middleware
+const { authenticateToken, checkTenant } = require('../middleware/auth'); 
 
 // Create new shop
-router.post('/create', async (req, res) => {
+router.post('/create', authenticateToken, async (req, res) => {
   try {
-    const { name, domain, design, features, hostingTier, transactionFee } = req.body;
-    const { userId, clientId } = req.user;
+    const { name, domain, designTheme, features, hostingTier, transactionFee } = req.body;
+    // Use req.user.client which is consistent with checkTenant middleware
+    const { userId, client: clientId } = req.user; 
 
-    if (!name || !design) {
+    if (!name || !designTheme) {
       return res.status(400).json({ error: 'Shop name and design are required' });
     }
 
-    const result = await pool.query(
-      `INSERT INTO shops (client_id, name, domain, design_theme, features, hosting_tier, transaction_fee, created_by, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-       RETURNING *`,
-      [clientId, name, domain, design, JSON.stringify(features), hostingTier, transactionFee, userId]
-    );
+    const newShop = new Shop({
+      client: clientId,
+      name,
+      domain,
+      designTheme,
+      features,
+      hostingTier,
+      transactionFee,
+      createdBy: userId,
+    });
+
+    const savedShop = await newShop.save();
 
     res.status(201).json({
       message: 'Shop created successfully',
-      shop: result.rows[0]
+      shop: savedShop
     });
 
   } catch (error) {
     console.error('Shop creation error:', error);
+    if (error.code === 11000) {
+      return res.status(400).json({ error: 'A shop with this domain already exists.' });
+    }
     res.status(500).json({ error: 'Failed to create shop' });
   }
 });
 
-// Get shops for client
-router.get('/:clientId', async (req, res) => {
+// Get shops for a client - now using checkTenant middleware
+router.get('/:clientId', [authenticateToken, checkTenant], async (req, res) => {
   try {
     const { clientId } = req.params;
-
-    // Check access permissions
-    if (req.user.role === 'client' && req.user.clientId !== clientId) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    const result = await pool.query(
-      'SELECT * FROM shops WHERE client_id = $1 ORDER BY created_at DESC',
-      [clientId]
-    );
-
-    res.json({ shops: result.rows });
+    const shops = await Shop.find({ client: clientId }).sort({ createdAt: -1 });
+    res.json({ shops });
 
   } catch (error) {
     console.error('Get shops error:', error);
@@ -59,55 +56,57 @@ router.get('/:clientId', async (req, res) => {
 });
 
 // Update shop
-router.put('/:clientId/:shopId', async (req, res) => {
+router.put('/:shopId', authenticateToken, async (req, res) => {
   try {
-    const { clientId, shopId } = req.params;
-    const { name, domain, design, features, hostingTier, status } = req.body;
+    const { shopId } = req.params;
+    const { name, domain, designTheme, features, hostingTier, status } = req.body;
+    const { client: clientId, role } = req.user;
 
-    // Check access permissions
-    if (req.user.role === 'client' && req.user.clientId !== clientId) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
+    const shop = await Shop.findById(shopId);
 
-    const result = await pool.query(
-      `UPDATE shops 
-       SET name = $1, domain = $2, design_theme = $3, features = $4, hosting_tier = $5, status = $6, updated_at = NOW()
-       WHERE id = $7 AND client_id = $8
-       RETURNING *`,
-      [name, domain, design, JSON.stringify(features), hostingTier, status, shopId, clientId]
-    );
-
-    if (result.rows.length === 0) {
+    if (!shop) {
       return res.status(404).json({ error: 'Shop not found' });
     }
 
+    // Check access permissions
+    if (role === 'client' && shop.client.toString() !== clientId.toString()) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const updatedShop = await Shop.findByIdAndUpdate(
+      shopId,
+      { $set: { name, domain, designTheme, features, hostingTier, status } },
+      { new: true, runValidators: true }
+    );
+
     res.json({
       message: 'Shop updated successfully',
-      shop: result.rows[0]
+      shop: updatedShop
     });
 
   } catch (error) {
     console.error('Shop update error:', error);
+     if (error.code === 11000) {
+      return res.status(400).json({ error: 'A shop with this domain already exists.' });
+    }
     res.status(500).json({ error: 'Failed to update shop' });
   }
 });
 
 // Delete shop
-router.delete('/:clientId/:shopId', async (req, res) => {
+router.delete('/:shopId', authenticateToken, async (req, res) => {
   try {
-    const { clientId, shopId } = req.params;
+    const { shopId } = req.params;
+    const { role } = req.user;
 
     // Only admins can delete shops
-    if (req.user.role !== 'admin') {
+    if (role !== 'admin') {
       return res.status(403).json({ error: 'Admin access required' });
     }
 
-    const result = await pool.query(
-      'DELETE FROM shops WHERE id = $1 AND client_id = $2 RETURNING id',
-      [shopId, clientId]
-    );
+    const deletedShop = await Shop.findByIdAndDelete(shopId);
 
-    if (result.rows.length === 0) {
+    if (!deletedShop) {
       return res.status(404).json({ error: 'Shop not found' });
     }
 

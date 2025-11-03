@@ -1,91 +1,93 @@
-
 const express = require('express');
 const router = express.Router();
 const Domain = require('../models/Domain');
 const Shop = require('../models/Shop');
-const { isAuthenticated } = require('../middleware/auth');
+const { authenticateToken, checkTenant } = require('../middleware/auth');
 const crypto = require('crypto');
 
-// @route   POST /api/domains
-// @desc    Add a custom domain
-// @access  Private
-router.post('/', isAuthenticated, async (req, res) => {
-  const { domain, shopId } = req.body;
-
+// Add a custom domain to a shop
+router.post('/', authenticateToken, async (req, res) => {
   try {
-    // Check if the user owns the shop
-    const shop = await Shop.findOne({ _id: shopId, owner: req.user.id });
+    const { domain, shopId } = req.body;
+    const { client: clientId, role } = req.user;
+
+    if (!domain || !shopId) {
+      return res.status(400).json({ error: 'Domain and shop ID are required' });
+    }
+
+    const shop = await Shop.findById(shopId);
     if (!shop) {
-      return res.status(401).json({ msg: 'Not authorized to add a domain to this shop' });
+      return res.status(404).json({ error: 'Shop not found' });
     }
 
-    // Check if domain already exists
-    let existingDomain = await Domain.findOne({ domain });
+    if (role === 'client' && shop.client.toString() !== clientId.toString()) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const existingDomain = await Domain.findOne({ domain });
     if (existingDomain) {
-      return res.status(400).json({ msg: 'Domain already exists' });
+      return res.status(400).json({ error: 'Domain already in use' });
     }
 
-    const verificationToken = crypto.randomBytes(20).toString('hex');
+    const verificationToken = crypto.randomBytes(32).toString('hex');
 
     const newDomain = new Domain({
       domain,
       shop: shopId,
+      client: clientId,
       verificationToken,
+      status: 'pending'
     });
 
     const savedDomain = await newDomain.save();
 
-    res.json(savedDomain);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server Error');
+    res.status(201).json({ 
+        message: 'Domain added successfully', 
+        domain: savedDomain 
+    });
+
+  } catch (error) {
+    console.error('Add domain error:', error);
+    res.status(500).json({ error: 'Failed to add domain' });
   }
 });
 
-// @route   GET /api/domains/shop/:shopId
-// @desc    Get all domains for a shop
-// @access  Private
-router.get('/shop/:shopId', isAuthenticated, async (req, res) => {
-  try {
-    // Check if the user owns the shop
-    const shop = await Shop.findOne({ _id: req.params.shopId, owner: req.user.id });
-    if (!shop) {
-      return res.status(401).json({ msg: 'Not authorized to view domains for this shop' });
+// Get domains for a client
+router.get('/:clientId', [authenticateToken, checkTenant], async (req, res) => {
+    try {
+        const { clientId } = req.params;
+        const domains = await Domain.find({ client: clientId }).populate('shop', 'name');
+        res.json({ domains });
+
+    } catch (error) {
+        console.error('Get domains error:', error);
+        res.status(500).json({ error: 'Failed to get domains' });
     }
-
-    const domains = await Domain.find({ shop: req.params.shopId });
-    res.json(domains);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).send('Server Error');
-  }
 });
 
-// @route   DELETE /api/domains/:id
-// @desc    Delete a domain
-// @access  Private
-router.delete('/:id', isAuthenticated, async (req, res) => {
+// Delete a domain
+router.delete('/:domainId', authenticateToken, async (req, res) => {
   try {
-    const domain = await Domain.findById(req.params.id).populate('shop');
+    const { domainId } = req.params;
+    const { client: clientId, role } = req.user;
+
+    const domain = await Domain.findById(domainId);
 
     if (!domain) {
-      return res.status(404).json({ msg: 'Domain not found' });
+      return res.status(404).json({ error: 'Domain not found' });
     }
 
-    // Check if the user owns the shop associated with the domain
-    if (domain.shop.owner.toString() !== req.user.id) {
-      return res.status(401).json({ msg: 'Not authorized to delete this domain' });
+    if (role === 'client' && domain.client.toString() !== clientId.toString()) {
+      return res.status(403).json({ error: 'Access denied' });
     }
 
-    await domain.remove();
+    await Domain.findByIdAndDelete(domainId);
 
-    res.json({ msg: 'Domain removed' });
-  } catch (err) {
-    console.error(err.message);
-    if (err.kind === 'ObjectId') {
-      return res.status(404).json({ msg: 'Domain not found' });
-    }
-    res.status(500).send('Server Error');
+    res.json({ message: 'Domain deleted successfully' });
+
+  } catch (error) {
+    console.error('Delete domain error:', error);
+    res.status(500).json({ error: 'Failed to delete domain' });
   }
 });
 

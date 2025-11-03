@@ -1,6 +1,7 @@
 const express = require('express');
 const { admin } = require('../services/firebase');
-const { User, Client } = require('../models');
+const { User } = require('../models');
+const { authenticateToken } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -13,6 +14,7 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: 'Name, email, and password are required' });
     }
 
+    // Create user in Firebase
     const userRecord = await admin.auth().createUser({ email, password, displayName: name });
 
     // Create a corresponding user in the local database
@@ -24,42 +26,35 @@ router.post('/register', async (req, res) => {
   } catch (error) {
     console.error('Registration error:', error);
     if (error.code === 'auth/email-already-exists') {
-        return res.status(400).json({ error: 'Email already in use' });
+      return res.status(400).json({ error: 'Email already in use' });
     }
     res.status(500).json({ error: 'Failed to register user' });
   }
 });
 
-// User login (token generation is handled client-side with Firebase SDK)
-router.post('/login', async (req, res) => {
-    // Client sends Firebase ID token in Authorization header
-    // The authenticateToken middleware will verify it.
-    // If verified, req.user will be populated.
-    res.json({ message: 'Login successful', user: req.user });
+// User login (token is verified by middleware)
+router.post('/login', authenticateToken, async (req, res) => {
+  // If authenticateToken middleware succeeds, req.user is populated.
+  // We can also fetch the full user profile with client data.
+  const user = await User.findById(req.user._id).populate('client');
+  res.json({ message: 'Login successful', user });
 });
 
 
-// Get current user profile
-router.get('/me', async (req, res) => {
-    try {
-        const token = req.headers.authorization?.split('Bearer ')[1];
-        if (!token) {
-            return res.status(401).json({ error: 'No token provided' });
-        }
-
-        const decodedToken = await admin.auth().verifyIdToken(token);
-        const user = await User.findOne({ firebaseId: decodedToken.uid }).populate('client');
-
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-
-        res.json({ user });
-
-    } catch (error) {
-        console.error('Get profile error:', error);
-        res.status(401).json({ error: 'Invalid or expired token' });
+// Get current user profile (protected by middleware)
+router.get('/me', authenticateToken, async (req, res) => {
+  // The middleware has already verified the token and attached the user.
+  // We just need to send it back, but we'll populate the client info first.
+  try {
+    const user = await User.findById(req.user._id).populate('client');
+    if (!user) {
+        return res.status(404).json({ error: 'User not found' });
     }
+    res.json({ user });
+  } catch (error) {
+    console.error('Get profile error:', error);
+    res.status(500).json({ error: 'Failed to retrieve user profile' });
+  }
 });
 
 module.exports = router;
